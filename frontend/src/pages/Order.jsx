@@ -11,7 +11,9 @@ import {
 import { useCart } from "../context/useCart.js";
 import "./Order.css";
 
-const API_URL = "http://127.0.0.1:8000";
+
+const API_URL = "https://the-cravings-cafe-api.onrender.com";
+
 
 export default function Order() {
   const {

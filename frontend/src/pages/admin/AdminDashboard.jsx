@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import "./AdminDashboard.css";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://the-cravings-cafe-api.onrender.com";
 
 const STATUSES = [
   "Pending",

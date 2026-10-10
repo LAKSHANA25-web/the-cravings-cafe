@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { CalendarDays, Clock, Users, CheckCircle } from "lucide-react";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://the-cravings-cafe-api.onrender.com";
 
 export default function Booking() {
   const [form, setForm] = useState({
