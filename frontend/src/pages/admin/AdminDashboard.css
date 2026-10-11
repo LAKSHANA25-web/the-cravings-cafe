@@ -206,3 +206,128 @@
     padding: 16px;
   }
 }
+
+.admin-login-card {
+  width: min(100%, 440px);
+  margin: 48px auto;
+  padding: 32px;
+  background: #fffaf5;
+  border: 1px solid #efd8c5;
+  border-radius: 20px;
+  box-shadow: 0 12px 36px rgba(70, 35, 20, 0.07);
+}
+
+.admin-login-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+  color: #bd482d;
+}
+
+.admin-login-card h1 {
+  margin: 8px 0;
+  text-align: center;
+}
+
+.admin-login-card > p {
+  text-align: center;
+}
+
+.admin-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.admin-login-form label {
+  margin-top: 8px;
+  font-weight: 600;
+}
+
+.admin-login-form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px;
+  border: 1px solid #e8d1bd;
+  border-radius: 10px;
+  background: white;
+  font: inherit;
+}
+
+.admin-login-form input:focus {
+  outline: 2px solid #bd482d;
+  outline-offset: 2px;
+}
+
+.admin-login-button {
+  margin-top: 14px;
+  padding: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #bd482d;
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.admin-login-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.admin-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid #e8d1bd;
+  border-radius: 10px;
+  background: #fffaf5;
+  color: #4a281c;
+  font: inherit;
+  cursor: pointer;
+}
+
+.admin-section-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-guest-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.admin-booking-status {
+  color: #785b4c;
+  font-size: 14px;
+}
+
+@media (max-width: 600px) {
+  .admin-login-card {
+    margin: 24px auto;
+    padding: 22px;
+  }
+
+  .admin-header {
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .admin-actions {
+    width: 100%;
+  }
+}

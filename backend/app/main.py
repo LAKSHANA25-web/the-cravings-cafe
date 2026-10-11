@@ -1,18 +1,30 @@
 
+import os
 from contextlib import asynccontextmanager
 from datetime import date, time
 from pathlib import Path
-import json
-import sqlite3
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+import psycopg
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
+from app.auth import (
+    create_access_token,
+    require_admin,
+    verify_password,
+)
+
+# -------------------- CONFIGURATION --------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "cafe.db"
+load_dotenv(BASE_DIR.parent / ".env")
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 ORDER_STATUSES = [
     "Pending",
@@ -30,65 +42,50 @@ BOOKING_STATUSES = [
 ]
 
 
-def initialize_database():
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_number TEXT UNIQUE NOT NULL,
-                customer_name TEXT NOT NULL,
-                phone TEXT NOT NULL,
-                order_type TEXT NOT NULL,
-                address TEXT,
-                items TEXT NOT NULL,
-                total REAL NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Pending',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+def get_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable is missing.")
 
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS bookings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                booking_number TEXT UNIQUE NOT NULL,
-                customer_name TEXT NOT NULL,
-                phone TEXT NOT NULL,
-                booking_date TEXT NOT NULL,
-                booking_time TEXT NOT NULL,
-                guests INTEGER NOT NULL,
-                special_request TEXT,
-                status TEXT NOT NULL DEFAULT 'Pending',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    return psycopg.connect(
+        DATABASE_URL,
+        sslmode="require",
+        row_factory=dict_row,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    initialize_database()
+    with get_connection() as connection:
+        connection.execute("SELECT 1")
     yield
 
 
 app = FastAPI(
     title="The Cravings Cafe API",
-    description="Cafe ordering, table booking and administration API",
-    version="1.2.0",
+    description="Cafe ordering, table booking and secure administration",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    origins.append(frontend_url.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 # -------------------- REQUEST MODELS --------------------
+
 
 class OrderItem(BaseModel):
     id: str
@@ -116,17 +113,20 @@ class BookingRequest(BaseModel):
     booking_date: date
     booking_time: time
     guests: int = Field(ge=1, le=50)
-    special_request: str | None = Field(
-        default=None,
-        max_length=500,
-    )
+    special_request: str | None = Field(default=None, max_length=500)
 
 
 class BookingStatusUpdate(BaseModel):
     status: str
 
 
+class AdminLoginRequest(BaseModel):
+    login: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=200)
+
+
 # -------------------- BASIC ENDPOINTS --------------------
+
 
 @app.get("/")
 def home():
@@ -135,10 +135,49 @@ def home():
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    with get_connection() as connection:
+        connection.execute("SELECT 1")
+
+    return {"status": "healthy", "database": "connected"}
+
+
+# -------------------- ADMIN AUTHENTICATION --------------------
+
+
+@app.post("/admin/login")
+def admin_login(request: AdminLoginRequest):
+    email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    username = os.getenv("ADMIN_USERNAME", "").strip().lower()
+    stored_hash = os.getenv("ADMIN_PASSWORD_HASH", "")
+
+    if not email or not username or not stored_hash:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin credentials are not configured on the server.",
+        )
+
+    supplied_login = request.login.strip().lower()
+
+    if supplied_login not in {email, username}:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username/email or password.",
+        )
+
+    if not verify_password(request.password, stored_hash):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username/email or password.",
+        )
+
+    return {
+        "access_token": create_access_token("admin"),
+        "token_type": "bearer",
+    }
 
 
 # -------------------- CUSTOMER ORDERS --------------------
+
 
 @app.post("/orders", status_code=201)
 def create_order(order: OrderRequest):
@@ -156,18 +195,20 @@ def create_order(order: OrderRequest):
             detail="A delivery address is required.",
         )
 
-    total = sum(
-        item.price * item.quantity for item in order.items
+    total = round(
+        sum(item.price * item.quantity for item in order.items), 2
     )
     order_number = "CC-" + uuid4().hex[:8].upper()
+    items_data = [item.model_dump() for item in order.items]
 
-    with sqlite3.connect(DB_PATH) as connection:
+    with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO orders (
-                order_number, customer_name, phone,
-                order_type, address, items, total, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO public.orders (
+                order_number, customer_name, phone, order_type,
+                address, items, total_amount, status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 order_number,
@@ -175,9 +216,7 @@ def create_order(order: OrderRequest):
                 order.phone,
                 order.order_type,
                 order.address.strip() if order.address else None,
-                json.dumps([
-                    item.model_dump() for item in order.items
-                ]),
+                Jsonb(items_data),
                 total,
                 "Pending",
             ),
@@ -186,29 +225,29 @@ def create_order(order: OrderRequest):
     return {
         "message": "Order saved successfully.",
         "order_number": order_number,
-        "total": round(total, 2),
+        "total": total,
         "status": "Pending",
     }
 
 
 @app.get("/orders")
-def list_orders():
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.row_factory = sqlite3.Row
+def list_orders(admin: dict = Depends(require_admin)):
+    with get_connection() as connection:
         rows = connection.execute(
             """
             SELECT id, order_number, customer_name, phone,
-                   order_type, address, items, total,
+                   order_type, address, items, total_amount,
                    status, created_at
-            FROM orders
+            FROM public.orders
             ORDER BY id DESC
             """
         ).fetchall()
 
     return [
         {
-            **dict(row),
-            "items": json.loads(row["items"]),
+            **row,
+            "total": float(row["total_amount"]),
+            "items": row["items"],
         }
         for row in rows
     ]
@@ -218,28 +257,27 @@ def list_orders():
 def update_order_status(
     order_number: str,
     update: StatusUpdate,
+    admin: dict = Depends(require_admin),
 ):
     if update.status not in ORDER_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail=f"Status must be one of: {', '.join(ORDER_STATUSES)}",
+            detail="Status must be one of: " + ", ".join(ORDER_STATUSES),
         )
 
-    with sqlite3.connect(DB_PATH) as connection:
-        cursor = connection.execute(
+    with get_connection() as connection:
+        row = connection.execute(
             """
-            UPDATE orders
-            SET status = ?
-            WHERE order_number = ?
+            UPDATE public.orders
+            SET status = %s
+            WHERE order_number = %s
+            RETURNING order_number
             """,
             (update.status, order_number),
-        )
+        ).fetchone()
 
-        if cursor.rowcount == 0:
-            raise HTTPException(
-                status_code=404,
-                detail="Order not found.",
-            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Order not found.")
 
     return {
         "message": "Order status updated.",
@@ -250,35 +288,28 @@ def update_order_status(
 
 # -------------------- TABLE BOOKINGS --------------------
 
+
 @app.post("/bookings", status_code=201)
 def create_booking(booking: BookingRequest):
-    if booking.booking_date < date.today():
-        raise HTTPException(
-            status_code=400,
-            detail="Booking date cannot be in the past.",
-        )
-
     booking_number = "BK-" + uuid4().hex[:8].upper()
 
-    with sqlite3.connect(DB_PATH) as connection:
+    with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO bookings (
-                booking_number, customer_name, phone,
-                booking_date, booking_time, guests,
-                special_request, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO public.bookings (
+                booking_number, customer_name, phone, booking_date,
+                booking_time, guests, special_request, status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 booking_number,
                 booking.customer_name.strip(),
                 booking.phone,
-                booking.booking_date.isoformat(),
+                booking.booking_date,
                 booking.booking_time.strftime("%H:%M"),
                 booking.guests,
-                booking.special_request.strip()
-                if booking.special_request
-                else None,
+                booking.special_request,
                 "Pending",
             ),
         )
@@ -286,59 +317,59 @@ def create_booking(booking: BookingRequest):
     return {
         "message": "Table booking saved successfully.",
         "booking_number": booking_number,
-        "booking_date": booking.booking_date.isoformat(),
-        "booking_time": booking.booking_time.strftime("%H:%M"),
-        "guests": booking.guests,
         "status": "Pending",
     }
 
 
 @app.get("/bookings")
-def list_bookings():
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.row_factory = sqlite3.Row
+def list_bookings(admin: dict = Depends(require_admin)):
+    with get_connection() as connection:
         rows = connection.execute(
             """
             SELECT id, booking_number, customer_name, phone,
                    booking_date, booking_time, guests,
                    special_request, status, created_at
-            FROM bookings
+            FROM public.bookings
             ORDER BY booking_date DESC, booking_time DESC, id DESC
             """
         ).fetchall()
 
-    return [dict(row) for row in rows]
+    return [
+        {
+            **row,
+            "booking_date": row["booking_date"].isoformat(),
+            "booking_time": str(row["booking_time"]),
+        }
+        for row in rows
+    ]
 
 
 @app.patch("/bookings/{booking_number}/status")
 def update_booking_status(
     booking_number: str,
     update: BookingStatusUpdate,
+    admin: dict = Depends(require_admin),
 ):
     if update.status not in BOOKING_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Status must be one of: "
-                + ", ".join(BOOKING_STATUSES)
-            ),
+            detail="Status must be one of: "
+            + ", ".join(BOOKING_STATUSES),
         )
 
-    with sqlite3.connect(DB_PATH) as connection:
-        cursor = connection.execute(
+    with get_connection() as connection:
+        row = connection.execute(
             """
-            UPDATE bookings
-            SET status = ?
-            WHERE booking_number = ?
+            UPDATE public.bookings
+            SET status = %s
+            WHERE booking_number = %s
+            RETURNING booking_number
             """,
             (update.status, booking_number),
-        )
+        ).fetchone()
 
-        if cursor.rowcount == 0:
-            raise HTTPException(
-                status_code=404,
-                detail="Booking not found.",
-            )
+    if not row:
+        raise HTTPException(status_code=404, detail="Booking not found.")
 
     return {
         "message": "Booking status updated.",
@@ -349,64 +380,56 @@ def update_booking_status(
 
 # -------------------- ADMIN SUMMARY --------------------
 
+
 @app.get("/admin/summary")
-def admin_summary():
-    with sqlite3.connect(DB_PATH) as connection:
-        total_orders = connection.execute(
-            "SELECT COUNT(*) FROM orders"
-        ).fetchone()[0]
-
-        pending_orders = connection.execute(
-            "SELECT COUNT(*) FROM orders WHERE status = 'Pending'"
-        ).fetchone()[0]
-
-        active_orders = connection.execute(
+def admin_summary(admin: dict = Depends(require_admin)):
+    with get_connection() as connection:
+        order_stats = connection.execute(
             """
-            SELECT COUNT(*) FROM orders
-            WHERE status IN ('Pending', 'Preparing', 'Ready')
+            SELECT
+                COUNT(*) AS total_orders,
+                COUNT(*) FILTER (
+                    WHERE status = 'Pending'
+                ) AS pending_orders,
+                COUNT(*) FILTER (
+                    WHERE status IN ('Pending', 'Preparing', 'Ready')
+                ) AS active_orders,
+                COUNT(*) FILTER (
+                    WHERE status = 'Completed'
+                ) AS completed_orders,
+                COALESCE(
+                    SUM(total_amount) FILTER (
+                        WHERE status = 'Completed'
+                    ), 0
+                ) AS completed_sales,
+                COALESCE(
+                    SUM(total_amount) FILTER (
+                        WHERE status != 'Cancelled'
+                    ), 0
+                ) AS non_cancelled_order_value
+            FROM public.orders
             """
-        ).fetchone()[0]
+        ).fetchone()
 
-        completed_orders = connection.execute(
-            "SELECT COUNT(*) FROM orders WHERE status = 'Completed'"
-        ).fetchone()[0]
-
-        completed_sales = connection.execute(
+        booking_stats = connection.execute(
             """
-            SELECT COALESCE(SUM(total), 0)
-            FROM orders
-            WHERE status = 'Completed'
+            SELECT
+                COUNT(*) AS total_bookings,
+                COUNT(*) FILTER (
+                    WHERE status = 'Pending'
+                ) AS pending_bookings,
+                COUNT(*) FILTER (
+                    WHERE status = 'Confirmed'
+                ) AS confirmed_bookings
+            FROM public.bookings
             """
-        ).fetchone()[0]
-
-        all_order_value = connection.execute(
-            """
-            SELECT COALESCE(SUM(total), 0)
-            FROM orders
-            WHERE status != 'Cancelled'
-            """
-        ).fetchone()[0]
-
-        total_bookings = connection.execute(
-            "SELECT COUNT(*) FROM bookings"
-        ).fetchone()[0]
-
-        pending_bookings = connection.execute(
-            "SELECT COUNT(*) FROM bookings WHERE status = 'Pending'"
-        ).fetchone()[0]
-
-        confirmed_bookings = connection.execute(
-            "SELECT COUNT(*) FROM bookings WHERE status = 'Confirmed'"
-        ).fetchone()[0]
+        ).fetchone()
 
     return {
-        "total_orders": total_orders,
-        "pending_orders": pending_orders,
-        "active_orders": active_orders,
-        "completed_orders": completed_orders,
-        "completed_sales": round(completed_sales, 2),
-        "non_cancelled_order_value": round(all_order_value, 2),
-        "total_bookings": total_bookings,
-        "pending_bookings": pending_bookings,
-        "confirmed_bookings": confirmed_bookings,
+        **order_stats,
+        **booking_stats,
+        "completed_sales": float(order_stats["completed_sales"]),
+        "non_cancelled_order_value": float(
+            order_stats["non_cancelled_order_value"]
+        ),
     }

@@ -6,15 +6,27 @@ import {
   Clock,
   CheckCircle,
   IndianRupee,
+  CalendarDays,
+  Users,
+  LogOut,
+  LockKeyhole,
 } from "lucide-react";
 import "./AdminDashboard.css";
 
 const API = "https://the-cravings-cafe-api.onrender.com";
+const TOKEN_KEY = "cravings_admin_token";
 
-const STATUSES = [
+const ORDER_STATUSES = [
   "Pending",
   "Preparing",
   "Ready",
+  "Completed",
+  "Cancelled",
+];
+
+const BOOKING_STATUSES = [
+  "Pending",
+  "Confirmed",
   "Completed",
   "Cancelled",
 ];
@@ -26,142 +38,244 @@ const money = (amount) =>
     maximumFractionDigits: 2,
   }).format(Number(amount) || 0);
 
-export default function AdminDashboard() {
-  const [orders, setOrders] = useState([]);
-  const [summary, setSummary] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [updating, setUpdating] = useState("");
+async function apiRequest(path, token, options = {}) {
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
+  });
 
-  const loadDashboard = useCallback(async () => {
+  const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401) {
+    throw new Error("SESSION_EXPIRED");
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data.detail || data.message || "The request failed."
+    );
+  }
+
+  return data;
+}
+
+function AdminLogin({ onLogin }) {
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setLoading(true);
     setError("");
 
     try {
-      const [ordersResponse, summaryResponse] = await Promise.all([
-        fetch(`${API}/orders`),
-        fetch(`${API}/admin/summary`),
-      ]);
+      const result = await apiRequest("/admin/login", null, {
+        method: "POST",
+        body: JSON.stringify({ login, password }),
+      });
 
-      if (!ordersResponse.ok) {
-        throw new Error("Unable to load orders.");
+      if (!result.access_token) {
+        throw new Error("The server did not return an access token.");
       }
 
-      if (!summaryResponse.ok) {
-        throw new Error(
-          "Unable to load the admin summary. Check the backend endpoint."
-        );
-      }
-
-      const ordersData = await ordersResponse.json();
-      const summaryData = await summaryResponse.json();
-
-      setOrders(
-        Array.isArray(ordersData)
-          ? ordersData
-          : ordersData.orders || []
-      );
-      setSummary(summaryData);
+      onLogin(result.access_token);
     } catch (err) {
       setError(
-        err.message ||
-          "Cannot connect to the backend. Make sure FastAPI is running."
+        err.message === "Failed to fetch"
+          ? "Cannot connect to the cafe server. Check the API and try again."
+          : err.message
       );
     } finally {
       setLoading(false);
     }
+  }
+
+  return (
+    <main className="admin-page">
+      <section
+        className="admin-login-card"
+        aria-labelledby="admin-login-title"
+      >
+        <div className="admin-login-icon">
+          <LockKeyhole size={30} />
+        </div>
+
+        <p className="admin-eyebrow">THE CRAVINGS CAFE</p>
+        <h1 id="admin-login-title">Admin Login</h1>
+        <p>Sign in to manage customer orders and table bookings.</p>
+
+        {error && (
+          <div className="admin-error" role="alert">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="admin-login-form">
+          <label htmlFor="admin-login">Email or username</label>
+          <input
+            id="admin-login"
+            type="text"
+            autoComplete="username"
+            placeholder="Enter email or username"
+            value={login}
+            onChange={(event) => setLogin(event.target.value)}
+            required
+          />
+
+          <label htmlFor="admin-password">Password</label>
+          <input
+            id="admin-password"
+            type="password"
+            autoComplete="current-password"
+            placeholder="Enter your password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+
+          <button
+            className="admin-login-button"
+            type="submit"
+            disabled={loading}
+          >
+            {loading ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+
+        <p className="admin-note">
+          Authorized cafe administrators only.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+export default function AdminDashboard() {
+  const [token, setToken] = useState(
+    () => sessionStorage.getItem(TOKEN_KEY) || ""
+  );
+  const [orders, setOrders] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [updating, setUpdating] = useState("");
+
+  const logout = useCallback(() => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    setToken("");
+    setOrders([]);
+    setBookings([]);
+    setSummary({});
+    setError("");
+    setUpdating("");
   }, []);
 
-  useEffect(() => {
-    let active = true;
+  const loadDashboard = useCallback(async () => {
+    if (!token) return;
 
-    async function initialize() {
-      try {
-        const [ordersResponse, summaryResponse] = await Promise.all([
-          fetch(`${API}/orders`),
-          fetch(`${API}/admin/summary`),
-        ]);
-
-        if (!ordersResponse.ok || !summaryResponse.ok) {
-          throw new Error("Unable to load dashboard data.");
-        }
-
-        const ordersData = await ordersResponse.json();
-        const summaryData = await summaryResponse.json();
-
-        if (active) {
-          setOrders(
-            Array.isArray(ordersData)
-              ? ordersData
-              : ordersData.orders || []
-          );
-          setSummary(summaryData);
-          setError("");
-        }
-      } catch (err) {
-        if (active) {
-          setError(
-            err.message ||
-              "Cannot connect to the backend. Check that FastAPI is running."
-          );
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
-
-    initialize();
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  async function changeStatus(orderNumber, status) {
-    setUpdating(orderNumber);
+    setLoading(true);
     setError("");
 
     try {
-      const response = await fetch(
-        `${API}/orders/${encodeURIComponent(orderNumber)}/status`,
+      const [ordersData, bookingsData, summaryData] =
+        await Promise.all([
+          apiRequest("/orders", token),
+          apiRequest("/bookings", token),
+          apiRequest("/admin/summary", token),
+        ]);
+
+      setOrders(Array.isArray(ordersData) ? ordersData : ordersData.orders || []);
+      setBookings(
+        Array.isArray(bookingsData)
+          ? bookingsData
+          : bookingsData.bookings || []
+      );
+      setSummary(summaryData);
+    } catch (err) {
+      if (err.message === "SESSION_EXPIRED") {
+        logout();
+        setError("Your session expired. Please sign in again.");
+      } else {
+        setError(
+          err.message === "Failed to fetch"
+            ? "Cannot connect to the API. Check the server and try again."
+            : err.message
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [token, logout]);
+
+  useEffect(() => {
+    if (token) {
+      loadDashboard();
+    }
+  }, [token, loadDashboard]);
+
+  function handleLogin(accessToken) {
+    sessionStorage.setItem(TOKEN_KEY, accessToken);
+    setToken(accessToken);
+  }
+
+  async function changeStatus(type, number, status) {
+    const key = `${type}-${number}`;
+    setUpdating(key);
+    setError("");
+
+    try {
+      const endpoint =
+        type === "order" ? "/orders" : "/bookings";
+
+      await apiRequest(
+        `${endpoint}/${encodeURIComponent(number)}/status`,
+        token,
         {
           method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
           body: JSON.stringify({ status }),
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail || data.message || "Status update failed."
-        );
-      }
-
       await loadDashboard();
     } catch (err) {
-      setError(err.message || "Could not update order status.");
+      if (err.message === "SESSION_EXPIRED") {
+        logout();
+        setError("Your session expired. Please sign in again.");
+      } else {
+        setError(err.message || "Could not update status.");
+      }
     } finally {
       setUpdating("");
     }
   }
 
-  const pendingCount = orders.filter(
+  if (!token) {
+    return <AdminLogin onLogin={handleLogin} />;
+  }
+
+  const pendingOrders = orders.filter(
     (order) => order.status === "Pending"
   ).length;
 
-  const completedCount = orders.filter(
+  const completedOrders = orders.filter(
     (order) => order.status === "Completed"
   ).length;
 
-  if (loading) {
+  if (loading && orders.length === 0 && bookings.length === 0) {
     return (
       <main className="admin-page">
         <p>Loading cafe dashboard...</p>
+        {error && <div className="admin-error">{error}</div>}
+        <button type="button" onClick={loadDashboard}>
+          Try again
+        </button>
       </main>
     );
   }
@@ -172,17 +286,29 @@ export default function AdminDashboard() {
         <div>
           <p className="admin-eyebrow">THE CRAVINGS CAFE</p>
           <h1>Admin Dashboard</h1>
-          <p>Manage customer orders and their status.</p>
+          <p>Manage customer orders and table reservations.</p>
         </div>
 
-        <button
-          className="admin-refresh"
-          type="button"
-          onClick={loadDashboard}
-        >
-          <RefreshCw size={17} />
-          Refresh
-        </button>
+        <div className="admin-actions">
+          <button
+            className="admin-refresh"
+            type="button"
+            onClick={loadDashboard}
+            disabled={loading}
+          >
+            <RefreshCw size={17} />
+            {loading ? "Refreshing..." : "Refresh"}
+          </button>
+
+          <button
+            className="admin-logout"
+            type="button"
+            onClick={logout}
+          >
+            <LogOut size={17} />
+            Logout
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -195,36 +321,29 @@ export default function AdminDashboard() {
         <article className="admin-stat">
           <ShoppingBag />
           <span>Total Orders</span>
-          <strong>
-            {summary.total_orders ?? orders.length}
-          </strong>
+          <strong>{summary.total_orders ?? orders.length}</strong>
         </article>
 
         <article className="admin-stat">
           <Clock />
           <span>Pending Orders</span>
-          <strong>
-            {summary.pending_orders ?? pendingCount}
-          </strong>
+          <strong>{summary.pending_orders ?? pendingOrders}</strong>
         </article>
 
         <article className="admin-stat">
           <CheckCircle />
           <span>Completed Orders</span>
-          <strong>
-            {summary.completed_orders ?? completedCount}
-          </strong>
+          <strong>{summary.completed_orders ?? completedOrders}</strong>
         </article>
 
         <article className="admin-stat">
           <IndianRupee />
           <span>Completed Sales</span>
-          <strong>
-            {money(summary.completed_sales)}
-          </strong>
+          <strong>{money(summary.completed_sales)}</strong>
         </article>
       </section>
 
+      {/* CUSTOMER ORDERS */}
       <section className="admin-orders">
         <div className="admin-section-heading">
           <h2>Customer Orders</h2>
@@ -232,100 +351,167 @@ export default function AdminDashboard() {
         </div>
 
         {orders.length === 0 ? (
-          <div className="admin-empty">
-            No orders found.
-          </div>
+          <div className="admin-empty">No orders found.</div>
         ) : (
-          orders.map((order) => (
-            <article
-              className="admin-order-card"
-              key={order.order_number}
-            >
-              <div className="admin-order-top">
-                <div>
-                  <p className="admin-order-number">
-                    {order.order_number}
-                  </p>
+          orders.map((order) => {
+            const number = order.order_number;
+            const key = `order-${number}`;
 
-                  <h3>
-                    {order.customer_name || order.name || "Customer"}
-                  </h3>
+            return (
+              <article className="admin-order-card" key={number}>
+                <div className="admin-order-top">
+                  <div>
+                    <p className="admin-order-number">{number}</p>
+                    <h3>{order.customer_name || "Customer"}</h3>
+                    <p>{order.phone}</p>
+                  </div>
 
-                  <p>{order.phone || order.customer_phone || ""}</p>
+                  <strong className="admin-order-total">
+                    {money(order.total ?? order.total_amount)}
+                  </strong>
                 </div>
 
-                <strong className="admin-order-total">
-                  {money(order.total)}
-                </strong>
-              </div>
+                <div className="admin-order-details">
+                  <span>{order.order_type || "Pickup"}</span>
+                  <span>Status: {order.status}</span>
+                </div>
 
-              <div className="admin-order-details">
-                <span>{order.order_type || "Pickup"}</span>
-                <span>Status: {order.status || "Pending"}</span>
-              </div>
-
-              {order.address && (
-                <p className="admin-address">
-                  Delivery address: {order.address}
-                </p>
-              )}
-
-              <div className="admin-item-list">
-                {(order.items || []).map((item, index) => (
-                  <div
-                    className="admin-item"
-                    key={`${item.id || item.name}-${index}`}
-                  >
-                    <span>
-                      {item.icon || "🍽️"} {item.name} ×{" "}
-                      {item.quantity}
-                    </span>
-
-                    <strong>
-                      {money(
-                        (Number(item.price) || 0) *
-                          (Number(item.quantity) || 0)
-                      )}
-                    </strong>
-                  </div>
-                ))}
-              </div>
-
-              <div className="admin-status-row">
-                <label htmlFor={`status-${order.order_number}`}>
-                  Update status
-                </label>
-
-                <select
-                  id={`status-${order.order_number}`}
-                  value={order.status || "Pending"}
-                  disabled={updating === order.order_number}
-                  onChange={(event) =>
-                    changeStatus(
-                      order.order_number,
-                      event.target.value
-                    )
-                  }
-                >
-                  {STATUSES.map((status) => (
-                    <option key={status} value={status}>
-                      {status}
-                    </option>
-                  ))}
-                </select>
-
-                {updating === order.order_number && (
-                  <span>Updating...</span>
+                {order.address && (
+                  <p className="admin-address">
+                    Delivery address: {order.address}
+                  </p>
                 )}
-              </div>
-            </article>
-          ))
+
+                <div className="admin-item-list">
+                  {(Array.isArray(order.items) ? order.items : []).map(
+                    (item, index) => (
+                      <div
+                        className="admin-item"
+                        key={`${item.id || item.name}-${index}`}
+                      >
+                        <span>
+                          {item.icon || "🍽️"} {item.name} × {item.quantity}
+                        </span>
+                        <strong>
+                          {money(
+                            (Number(item.price) || 0) *
+                              (Number(item.quantity) || 0)
+                          )}
+                        </strong>
+                      </div>
+                    )
+                  )}
+                </div>
+
+                <div className="admin-status-row">
+                  <label htmlFor={`status-${number}`}>
+                    Update order status
+                  </label>
+
+                  <select
+                    id={`status-${number}`}
+                    value={order.status || "Pending"}
+                    disabled={updating === key || loading}
+                    onChange={(event) =>
+                      changeStatus("order", number, event.target.value)
+                    }
+                  >
+                    {ORDER_STATUSES.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+
+                  {updating === key && <span>Updating...</span>}
+                </div>
+              </article>
+            );
+          })
+        )}
+      </section>
+
+      {/* TABLE BOOKINGS */}
+      <section className="admin-orders admin-bookings">
+        <div className="admin-section-heading">
+          <h2>
+            <CalendarDays size={21} /> Table Bookings
+          </h2>
+          <span>{bookings.length} reservations</span>
+        </div>
+
+        {bookings.length === 0 ? (
+          <div className="admin-empty">No table bookings found.</div>
+        ) : (
+          bookings.map((booking) => {
+            const number = booking.booking_number;
+            const key = `booking-${number}`;
+
+            return (
+              <article className="admin-order-card" key={number}>
+                <div className="admin-order-top">
+                  <div>
+                    <p className="admin-order-number">{number}</p>
+                    <h3>{booking.customer_name || "Customer"}</h3>
+                    <p>{booking.phone}</p>
+                  </div>
+
+                  <strong className="admin-guest-count">
+                    <Users size={18} />
+                    {booking.guests} guests
+                  </strong>
+                </div>
+
+                <div className="admin-order-details">
+                  <span>
+                    <strong>Date:</strong> {booking.booking_date}
+                  </span>
+                  <span>
+                    <strong>Time:</strong>{" "}
+                    {String(booking.booking_time || "").slice(0, 5)}
+                  </span>
+                </div>
+
+                {booking.special_request && (
+                  <p className="admin-address">
+                    Special request: {booking.special_request}
+                  </p>
+                )}
+
+                <p className="admin-booking-status">
+                  Status: {booking.status}
+                </p>
+
+                <div className="admin-status-row">
+                  <label htmlFor={`booking-status-${number}`}>
+                    Update booking status
+                  </label>
+
+                  <select
+                    id={`booking-status-${number}`}
+                    value={booking.status || "Pending"}
+                    disabled={updating === key || loading}
+                    onChange={(event) =>
+                      changeStatus("booking", number, event.target.value)
+                    }
+                  >
+                    {BOOKING_STATUSES.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+
+                  {updating === key && <span>Updating...</span>}
+                </div>
+              </article>
+            );
+          })
         )}
       </section>
 
       <p className="admin-note">
-        Development dashboard. Secure the admin endpoints with
-        authentication before public deployment.
+        Admin access is protected by backend authentication.
       </p>
     </main>
   );
