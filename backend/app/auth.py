@@ -1,5 +1,6 @@
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -18,7 +19,8 @@ def _b64encode(data: bytes) -> str:
 
 
 def _b64decode(data: str) -> bytes:
-    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    padded = data + "=" * (-len(data) % 4)
+    return base64.b64decode(padded, altchars=b"-_", validate=True)
 
 
 def hash_password(password: str) -> str:
@@ -28,7 +30,6 @@ def hash_password(password: str) -> str:
         "sha256", password.encode("utf-8"), salt, 310_000
     )
     return f"{_b64encode(salt)}${_b64encode(digest)}"
-
 
 def verify_password(password: str, stored_hash: str) -> bool:
     try:
@@ -94,13 +95,21 @@ def require_admin(
         supplied = _b64decode(parts[2])
         payload = json.loads(_b64decode(parts[1]))
         header = json.loads(_b64decode(parts[0]))
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        ValueError,
+        TypeError,
+        json.JSONDecodeError,
+    ):
         raise unauthorized
 
     if (
-        header.get("alg") != "HS256"
+        not isinstance(header, dict)
+        or not isinstance(payload, dict)
+        or header.get("alg") != "HS256"
         or not hmac.compare_digest(expected, supplied)
-        or not isinstance(payload.get("exp"), int)
+        or type(payload.get("exp")) is not int
         or payload["exp"] <= int(time.time())
         or payload.get("sub") != "admin"
     ):

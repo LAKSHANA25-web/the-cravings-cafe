@@ -1,10 +1,14 @@
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, Minus, ShoppingBag, Search, X } from "lucide-react";
 import { useCart } from "../context/useCart.js";
+import PageMeta from "../components/PageMeta";
+import { apiUrl } from "../lib/api";
 
-const menuSections = [
+// The admin import action reuses the customer menu catalog.
+// eslint-disable-next-line react-refresh/only-export-components
+export const menuSections = [
   {
     id: "shawarma",
     title: "Shawarma",
@@ -253,6 +257,9 @@ export default function Menu() {
   const [searchText, setSearchText] = useState("");
   const [selectedPrices, setSelectedPrices] = useState({});
   const [cartOpen, setCartOpen] = useState(false);
+  const [apiMenuItems, setApiMenuItems] = useState(null);
+  const [menuError, setMenuError] = useState("");
+  const [menuReload, setMenuReload] = useState(0);
 
   const {
     cart,
@@ -263,10 +270,60 @@ export default function Menu() {
     cartTotal,
   } = useCart();
 
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadMenu() {
+      setMenuError("");
+      try {
+        const response = await fetch(apiUrl("/menu"), {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`Menu request failed (HTTP ${response.status}).`);
+        }
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          setApiMenuItems(data);
+        } else {
+          throw new Error("The menu response was not valid.");
+        }
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          setMenuError(
+            "We couldn't load the menu right now. Please try again."
+          );
+          setApiMenuItems([]);
+        }
+      }
+    }
+
+    void loadMenu();
+    return () => controller.abort();
+  }, [menuReload]);
+
+  const menuSectionsFromApi = useMemo(() => {
+    const grouped = new Map();
+    for (const item of apiMenuItems || []) {
+      if (item.deleted) continue;
+      const title = item.category?.trim() || "Other";
+      const id = `category-${encodeURIComponent(title.toLowerCase())}`;
+      if (!grouped.has(id)) {
+        grouped.set(id, { id, title, icon: item.icon || "🍽️", items: [] });
+      }
+      grouped.get(id).items.push({
+        ...item,
+        id: item.item_key,
+        prices: (item.prices || [item.price]).map(Number),
+        optionLabels: item.option_labels || item.optionLabels || [],
+      });
+    }
+    return [...grouped.values()];
+  }, [apiMenuItems]);
+
   const visibleSections = useMemo(() => {
     const query = searchText.trim().toLowerCase();
-
-    return menuSections
+    return menuSectionsFromApi
       .filter(
         (section) =>
           activeCategory === "all" || section.id === activeCategory
@@ -278,26 +335,34 @@ export default function Menu() {
         ),
       }))
       .filter((section) => section.items.length > 0);
-  }, [activeCategory, searchText]);
+  }, [activeCategory, menuSectionsFromApi, searchText]);
 
   const getSelectedPrice = (item) =>
-    selectedPrices[item.name] ?? item.prices[0];
+    selectedPrices[item.id] ?? item.prices[0];
 
-  const getCartKey = (item, price) => `${item.name}__${price}`;
+  const getCartKey = (item, price) =>
+    `${item.id || item.name}__${price}`;
 
   function addItem(item) {
     const price = getSelectedPrice(item);
 
     addToCart({
       id: getCartKey(item, price),
+      menu_item_id: item.item_key || null,
       name: item.name,
       icon: item.icon,
       price,
+      variant:
+        item.optionLabels?.[item.prices.indexOf(price)] || null,
     });
   }
 
   return (
     <main className="menu-page">
+      <PageMeta
+        title="Menu | The Cravings Cafe"
+        description="Browse the current menu at The Cravings Cafe, including available items and price options."
+      />
       <section className="menu-header">
         <p className="menu-eyebrow">THE CRAVINGS CAFE</p>
         <h1>Our Menu</h1>
@@ -335,7 +400,7 @@ export default function Menu() {
           All Items
         </button>
 
-        {menuSections.map((section) => (
+        {menuSectionsFromApi.map((section) => (
           <button
             type="button"
             key={section.id}
@@ -348,13 +413,38 @@ export default function Menu() {
       </nav>
 
       <div className="menu-content">
-        {visibleSections.length === 0 && (
+        {apiMenuItems === null ? (
+          <div className="menu-empty" role="status">
+            <span>🍽️</span>
+            <h2>Loading menu</h2>
+            <p>Fetching the cafe&apos;s current menu.</p>
+          </div>
+        ) : menuError ? (
+          <div className="menu-empty" role="alert">
+            <h2>Menu temporarily unavailable</h2>
+            <p>{menuError}</p>
+            <button
+              type="button"
+              onClick={() => setMenuReload((value) => value + 1)}
+            >
+              Try again
+            </button>
+          </div>
+        ) : visibleSections.length === 0 ? (
           <div className="menu-empty">
             <span>🍽️</span>
-            <h2>No items found</h2>
-            <p>Try another search or select a different category.</p>
+            <h2>
+              {menuSectionsFromApi.length
+                ? "No items found"
+                : "Menu being updated"}
+            </h2>
+            <p>
+              {menuSectionsFromApi.length
+                ? "Try another search or select a different category."
+                : "Please check back shortly for the cafe's current menu."}
+            </p>
           </div>
-        )}
+        ) : null}
 
         {visibleSections.map((section) => (
           <section className="menu-section" key={section.id}>
@@ -382,6 +472,7 @@ export default function Menu() {
                     <div className="menu-card-content">
                       <p className="menu-category">{section.title}</p>
                       <h2>{item.name}</h2>
+                      {item.description && <p>{item.description}</p>}
 
                       {item.prices.length > 1 && (
                         <label className="price-option">
@@ -391,7 +482,7 @@ export default function Menu() {
                             onChange={(event) =>
                               setSelectedPrices((previous) => ({
                                 ...previous,
-                                [item.name]: Number(event.target.value),
+                                [item.id]: Number(event.target.value),
                               }))
                             }
                           >
@@ -409,7 +500,11 @@ export default function Menu() {
                       <div className="menu-card-bottom">
                         <strong className="menu-price">₹{selectedPrice}</strong>
 
-                        {quantity === 0 ? (
+                        {item.available === false ? (
+                          <span className="menu-unavailable">
+                            Unavailable
+                          </span>
+                        ) : quantity === 0 ? (
                           <button
                             type="button"
                             className="add-btn"
@@ -429,6 +524,7 @@ export default function Menu() {
                             <span>{quantity}</span>
                             <button
                               type="button"
+                              disabled={quantity >= 100}
                               onClick={() => addItem(item)}
                               aria-label={`Add one ${item.name}`}
                             >

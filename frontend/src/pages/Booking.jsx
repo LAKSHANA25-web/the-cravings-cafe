@@ -1,13 +1,14 @@
 
 import { useState } from "react";
 import { CalendarDays, Clock, Users, CheckCircle } from "lucide-react";
-
-const API = "https://the-cravings-cafe-api.onrender.com";
+import PageMeta from "../components/PageMeta";
+import { apiUrl } from "../lib/api";
 
 export default function Booking() {
   const [form, setForm] = useState({
     customer_name: "",
     phone: "",
+    email: "",
     booking_date: "",
     booking_time: "19:00",
     guests: "2",
@@ -33,26 +34,44 @@ export default function Booking() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API}/bookings`, {
+      const response = await fetch(apiUrl("/bookings"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...form,
           customer_name: form.customer_name.trim(),
           phone: form.phone,
+          email: form.email.trim() || null,
           guests: Number(form.guests),
           special_request: form.special_request.trim() || null,
           booking_time: `${form.booking_time}:00`,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
+        const detail = data.detail;
+        const errorMessage = Array.isArray(detail)
+          ? detail
+              .map((issue) => issue.msg)
+              .filter(Boolean)
+              .join(" ")
+          : detail;
+
         throw new Error(
-          typeof data.detail === "string"
-            ? data.detail
-            : JSON.stringify(data.detail || "Booking failed")
+          typeof errorMessage === "string" && errorMessage
+            ? errorMessage
+            : `Booking failed (HTTP ${response.status}). Please check your details.`
+        );
+      }
+
+      if (
+        typeof data.booking_number !== "string" ||
+        !data.booking_number.trim()
+      ) {
+        throw new Error(
+          "The server did not confirm your booking. Please try again."
         );
       }
 
@@ -60,6 +79,7 @@ export default function Booking() {
       setForm({
         customer_name: "",
         phone: "",
+        email: "",
         booking_date: "",
         booking_time: "19:00",
         guests: "2",
@@ -74,6 +94,10 @@ export default function Booking() {
 
   return (
     <main className="booking-page">
+      <PageMeta
+        title="Book a Table | The Cravings Cafe"
+        description="Request a table at The Cravings Cafe. Choose a date, time, and party size."
+      />
       <header className="booking-heading">
         <span className="booking-eyebrow">THE CRAVINGS CAFE</span>
         <h1>Book Your Table</h1>
@@ -135,6 +159,17 @@ export default function Booking() {
             pattern="[6-9][0-9]{9}"
             title="Enter a valid 10-digit Indian mobile number"
             required
+          />
+
+          <label htmlFor="email">Email (optional)</label>
+          <input
+            id="email"
+            name="email"
+            type="email"
+            maxLength={254}
+            value={form.email}
+            onChange={change}
+            placeholder="you@example.com"
           />
 
           <div className="booking-row">

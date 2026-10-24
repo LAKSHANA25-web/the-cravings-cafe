@@ -2270,6 +2270,18 @@
   font: inherit;
 }
 
+.menu-unavailable {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 9px;
+  background: #f3e8df;
+  color: #8b3425;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .menu-description {
   line-height: 1.6;
 }

@@ -9,11 +9,9 @@ import {
 } from "lucide-react";
 
 import { useCart } from "../context/useCart.js";
+import PageMeta from "../components/PageMeta";
+import { apiUrl } from "../lib/api";
 import "./Order.css";
-
-
-const API_URL = "https://the-cravings-cafe-api.onrender.com";
-
 
 export default function Order() {
   const {
@@ -22,12 +20,14 @@ export default function Order() {
     cartTotal,
     addToCart,
     removeFromCart,
+    removeItem,
     clearCart,
   } = useCart();
 
   const [customer, setCustomer] = useState({
     name: "",
     phone: "",
+    email: "",
     address: "",
   });
 
@@ -66,6 +66,7 @@ export default function Order() {
     const orderData = {
       customer_name: customer.name.trim(),
       phone: customer.phone,
+      email: customer.email.trim() || null,
       order_type: orderType,
       address:
         orderType === "Delivery"
@@ -73,9 +74,11 @@ export default function Order() {
           : null,
       items: cart.map((item) => ({
         id: String(item.id),
+        menu_item_id: item.menu_item_id || null,
         name: item.name,
         price: item.price,
         quantity: item.quantity,
+        variant: item.variant || null,
         icon: item.icon || "🍽️",
       })),
     };
@@ -83,7 +86,7 @@ export default function Order() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/orders`, {
+      const response = await fetch(apiUrl("/orders"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -91,15 +94,32 @@ export default function Order() {
         body: JSON.stringify(orderData),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : "Unable to place your order. Please check your details.";
+        const detail = data.detail;
+        const detailMessage = Array.isArray(detail)
+          ? detail
+              .map((issue) => issue.msg)
+              .filter(Boolean)
+              .join(" ")
+          : detail;
 
-        throw new Error(detail);
+        const message =
+          typeof detailMessage === "string" && detailMessage
+            ? detailMessage
+            : `Unable to place your order (HTTP ${response.status}). Please check your details.`;
+
+        throw new Error(message);
+      }
+
+      if (
+        typeof data.order_number !== "string" ||
+        !data.order_number.trim()
+      ) {
+        throw new Error(
+          "The server did not confirm your order. Your cart has been kept."
+        );
       }
 
       setOrderNumber(data.order_number);
@@ -122,6 +142,10 @@ export default function Order() {
   if (orderNumber) {
     return (
       <main className="order-page">
+        <PageMeta
+          title="Order Confirmed | The Cravings Cafe"
+          description="Your online order was submitted to The Cravings Cafe."
+        />
         <div className="order-heading">
           <span className="order-eyebrow">
             THE CRAVINGS CAFE
@@ -187,6 +211,10 @@ export default function Order() {
 
   return (
     <main className="order-page">
+      <PageMeta
+        title="Cart & Checkout | The Cravings Cafe"
+        description="Review your cafe order, update quantities, and submit your order."
+      />
       <div className="order-heading">
         <span className="order-eyebrow">
           THE CRAVINGS CAFE
@@ -229,6 +257,21 @@ export default function Order() {
               setCustomer({
                 ...customer,
                 name: e.target.value,
+              })
+            }
+          />
+
+          <label htmlFor="customer-email">Email (optional)</label>
+          <input
+            id="customer-email"
+            type="email"
+            maxLength={254}
+            placeholder="you@example.com"
+            value={customer.email}
+            onChange={(event) =>
+              setCustomer({
+                ...customer,
+                email: event.target.value,
               })
             }
           />
@@ -358,6 +401,7 @@ export default function Order() {
 
                     <div style={{ flex: 1 }}>
                       <strong>{item.name}</strong>
+                      {item.variant && <span> · {item.variant}</span>}
 
                       <p
                         style={{
@@ -397,26 +441,38 @@ export default function Order() {
                     <button
                       type="button"
                       onClick={() => addToCart(item)}
+                      disabled={item.quantity >= 100}
                       aria-label={`Add one ${item.name}`}
                     >
                       <Plus size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeItem(item.id)}
+                      aria-label={`Remove ${item.name} from cart`}
+                      className="ml-auto text-sm font-semibold text-[#a54029] underline"
+                    >
+                      Remove
                     </button>
                   </div>
                 </div>
               ))}
 
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  paddingTop: "20px",
-                  fontSize: "20px",
-                  fontWeight: "bold",
-                }}
-              >
-                <span>Estimated Total</span>
+              <div className="mt-5 flex justify-between border-t border-[#ead8c5] pt-5">
+                <span>Subtotal</span>
                 <span>₹{cartTotal}</span>
               </div>
+              <div className="mt-2 flex justify-between text-lg font-bold">
+                <span>Total</span>
+                <span>₹{cartTotal}</span>
+              </div>
+              <button
+                type="button"
+                onClick={clearCart}
+                className="mt-4 text-sm font-semibold text-[#a54029] underline"
+              >
+                Clear cart
+              </button>
 
               <p className="order-note">
                 Final charges, if applicable, are not
